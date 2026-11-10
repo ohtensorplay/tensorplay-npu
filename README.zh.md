@@ -39,6 +39,10 @@ TensorPlay 为框架之外的加速器预留了一个设备槽位（`PrivateUse1
   就能端到端跑通；
 - 在 TensorPlay 中设备名写作 `"npu"`（`tp.ones(3, device="npu")`）。
 
+同一个包还带有**图后端**：`tensorplay.compile(fn, backend="npu")` 将被捕获的
+区域经由昇腾图引擎编译为离线模型，并在 NPU 上执行，详见
+[图编译](#图编译ascend)。
+
 原生源码随 wheel 一起分发，首次加载时针对已安装的 CANN 工具链编译，并缓存在
 `~/.cache/tensorplay_extensions` 下。
 
@@ -47,7 +51,9 @@ TensorPlay 为框架之外的加速器预留了一个设备槽位（`PrivateUse1
 ### 依赖
 
 - 一块安装好驱动与固件的华为昇腾 NPU（`npu-smi info` 能看到卡）；
-- **CANN 工具链**（运行时、编译器与算子库，安装方法见昇腾官方文档）；
+- **CANN 工具链**（运行时、编译器与算子库，安装方法见昇腾官方文档）；`npu`
+  图后端还会用到工具链自带的 **ATC** 转换器及其 AscendCL Python 绑定
+  （`import acl`）；
 - 在同一环境中安装 TensorPlay（`pip install tensorplay`）。
 
 ### 环境变量
@@ -120,6 +126,45 @@ print(z.cpu().shape, float(loss.cpu()))
 设备以 `float32`、`float16` 和 `bfloat16` 计算。其余算子通过
 `cpu_fallback::register_host_fallbacks` 在主机上运行，因此**任何模型都能跑通**；
 设备不支持的数据类型（整数、`float64`、`bool`）同样走主机路径。
+
+## 图编译（Ascend）
+
+`tensorplay.compile(fn, backend="npu")` 将被捕获的区域经由昇腾**图引擎**
+（Graph Engine）下沉，并在 NPU 上执行。该区域会导出为 ONNX，用 **ATC** 转换器
+编译成离线模型，缓存在 `~/.cache/tensorplay-ascend` 下。缓存键覆盖图结构、样本
+形状与数据类型、目标 SoC 以及各项设置，因此只有当可能改变二进制产物的因素发生
+变化时才会重新构建。
+
+```python
+import tensorplay as tp
+import tensorplay_npu
+
+tensorplay_npu.load()
+
+def region(x, w, bias):
+    return tp.softmax(tp.relu(x @ w + bias), 1)
+
+f = tp.compile(region, backend="npu")
+x = tp.randn(8, 16, device="npu")
+w = tp.randn(16, 32, device="npu")
+b = tp.randn(32, device="npu")
+print(f(x, w, b).device)          # npu
+```
+
+选项通过 `options=` 传入（也可直接作为关键字参数）：
+
+| 选项 | 含义 |
+| --- | --- |
+| `precision` | `"fp32"`（保持导出精度，默认）、`"fp16"`（强制半精度）或 `"mix"`（由转换器混合精度） |
+| `soc_version` | 构建产物针对的 SoC，例如 `"Ascend910B4"`；不设置则从运行中的设备读取 |
+| `atc` | ATC 转换器路径；不设置则在工具链下自动查找 |
+| `cache_dir` | 编译产物所在目录；`None` 关闭磁盘缓存 |
+| `extra_atc_args` | 追加的 `atc` 参数，原样传给转换器 |
+| `pass_through_build_failures` | 构建失败时直接报错，而不是让该区域不编译地运行 |
+
+图引擎、ATC 转换器与 AscendCL Python 绑定都属于 CANN 工具链。缺少时该后端会被
+标记为不可用，在 `tensorplay.compile` 中指名它时会提示需要安装的内容。转换器
+无法构建的区域会退回其解释器执行，因此覆盖率缺口不会让整次编译失败。
 
 ## 性能
 
@@ -195,6 +240,7 @@ print(prof.key_averages().table(sort_by="device_time_total", row_limit=10))
 | `tensorplay_npu/csrc/ReduceKernels.cpp` | `sum`、`mean`、softmax/log-softmax 及反向 |
 | `tensorplay_npu/csrc/NPUProfiler.cpp` | 剖析器设备时间：每个算子前后一对事件 |
 | `tensorplay_npu/csrc/Module.cpp` | C 入口点：主机 fallback、内存统计 |
+| `tensorplay_npu/compiler/` | 图后端：ONNX 下沉、ATC 构建、内容寻址的模型缓存、NPU 执行 |
 | `tests/` | 与主机逐内核对比 |
 
 ## 版本与配套关系

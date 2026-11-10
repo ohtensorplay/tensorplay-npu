@@ -42,6 +42,11 @@ for Huawei Ascend NPUs:
   generic fallback, so models work end to end from day one;
 - the device is spelled `"npu"` in TensorPlay (`tp.ones(3, device="npu")`).
 
+The same package ships a **graph backend**: `tensorplay.compile(fn,
+backend="npu")` compiles a captured region into an offline model through the
+Ascend Graph Engine and runs it on the NPU — see
+[Graph compilation](#graph-compilation-ascend).
+
 The native sources ship inside the wheel and are compiled against the
 installed CANN toolkit the first time the backend is loaded, then cached
 under `~/.cache/tensorplay_extensions`.
@@ -53,7 +58,9 @@ under `~/.cache/tensorplay_extensions`.
 - a Huawei Ascend NPU with the driver and firmware installed
   (`npu-smi info` lists the card)
 - the **CANN toolkit** (runtime, compiler and operator library — see the
-  Ascend documentation for your card)
+  Ascend documentation for your card); the `npu` graph backend additionally
+  uses the toolkit's **ATC** converter and its AscendCL Python bindings
+  (`import acl`)
 - TensorPlay installed in the same environment (`pip install tensorplay`)
 
 ### Environment variables
@@ -128,6 +135,48 @@ The device computes in `float32`, `float16` and `bfloat16`.  Everything else
 runs on the host through `cpu_fallback::register_host_fallbacks`, so **every
 model runs**; data types the device does not take (integers, `float64`,
 `bool`) take the host path as well.
+
+## Graph compilation (Ascend)
+
+`tensorplay.compile(fn, backend="npu")` lowers a captured region through the
+Ascend **Graph Engine** and runs it on the NPU.  The region is exported to
+ONNX, compiled into an offline model with the **ATC** converter, and cached
+under `~/.cache/tensorplay-ascend`.  The cache key covers the graph, the
+sample shapes and dtypes, the target SoC and the settings, so a rebuild only
+happens when something that could change the binary changed.
+
+```python
+import tensorplay as tp
+import tensorplay_npu
+
+tensorplay_npu.load()
+
+def region(x, w, bias):
+    return tp.softmax(tp.relu(x @ w + bias), 1)
+
+f = tp.compile(region, backend="npu")
+x = tp.randn(8, 16, device="npu")
+w = tp.randn(16, 32, device="npu")
+b = tp.randn(32, device="npu")
+print(f(x, w, b).device)          # npu
+```
+
+Options go through `options=` (or as flat keywords):
+
+| Option | Meaning |
+| --- | --- |
+| `precision` | `"fp32"` (keep the exported precision, default), `"fp16"` (force half) or `"mix"` (let the converter mix precisions) |
+| `soc_version` | SoC the model is built for, for example `"Ascend910B4"`; unset reads it back off the running device |
+| `atc` | path to the ATC converter; unset discovers it under the toolkit |
+| `cache_dir` | directory for compiled models; `None` disables the disk cache |
+| `extra_atc_args` | extra `atc` arguments, appended verbatim |
+| `pass_through_build_failures` | raise on a build failure instead of running the region uncompiled |
+
+The Graph Engine, the ATC converter and the AscendCL Python bindings are part
+of the CANN toolkit.  Without them the backend is reported as unavailable and
+naming it in `tensorplay.compile` explains what to install.  A region the
+converter cannot build stays on its interpreter, so a coverage gap never
+fails the whole compile.
 
 ## Performance
 
@@ -207,6 +256,7 @@ event pairs are the device timeline.
 | `tensorplay_npu/csrc/ReduceKernels.cpp` | `sum`, `mean`, softmax/log-softmax with backward |
 | `tensorplay_npu/csrc/NPUProfiler.cpp` | profiler device time: an event pair around each operation |
 | `tensorplay_npu/csrc/Module.cpp` | C entry points: host fallbacks, memory statistics |
+| `tensorplay_npu/compiler/` | graph backend: ONNX down-lowering, the ATC build, a content-addressed model cache, NPU execution |
 | `tests/` | kernel-by-kernel comparison against the host |
 
 ## Versioning and compatibility
