@@ -2,7 +2,7 @@
   <picture>
     <source media="(prefers-color-scheme: dark)" srcset="docs/images/npu-lockup-white.png">
     <source media="(prefers-color-scheme: light)" srcset="docs/images/npu-lockup.png">
-    <img src="docs/images/npu-lockup.png" alt="tensorplay-npu" width="420">
+    <img src="docs/images/npu-lockup.png" alt="Ascend" width="420">
   </picture>
 </p>
 
