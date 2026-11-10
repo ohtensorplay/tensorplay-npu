@@ -5,7 +5,8 @@ the bridge replaces the AscendCL bindings and the ATC converter with
 stand-ins, so the path this package owns -- ONNX metadata, the converter
 command, the offset cache, loading, input staging, execution and output
 retrieval -- runs on any machine.  The end-to-end check needs an Ascend NPU
-with the CANN toolkit and is skipped when either is missing.
+with the CANN toolkit and is skipped when either is missing; it fails, rather
+than passing, if the region ends up running without a compiled model.
 """
 
 import ctypes
@@ -466,7 +467,7 @@ def test_backend_is_discoverable_by_name():
 
 
 @pytest.mark.skipif(not _has_acl(), reason="AscendCL bindings not installed")
-def test_compiled_region_matches_eager_on_npu():
+def test_compiled_region_matches_eager_on_npu(tmp_path):
     tensorplay_npu = pytest.importorskip("tensorplay_npu")
 
     if not os.path.isfile(
@@ -489,7 +490,14 @@ def test_compiled_region_matches_eager_on_npu():
     bias = tp.randn(32, device="npu")
 
     expected = region(x, w, bias)
-    compiled = tp.compile(region, backend="npu")
+    # A build failure has to raise here: letting the region run eagerly would
+    # compare the region against itself and pass without a compiled model.
+    cache = tmp_path / "om"
+    compiled = tp.compile(
+        region,
+        backend="npu",
+        options={"cache_dir": str(cache), "pass_through_build_failures": True},
+    )
     got = compiled(x, w, bias)
 
     assert got.device.type == "npu"
@@ -497,3 +505,5 @@ def test_compiled_region_matches_eager_on_npu():
         (got.cpu().to(tp.float64) - expected.cpu().to(tp.float64)).abs().max().item()
     )
     assert err < 1e-3, f"max error {err}"
+    built = [name for name in os.listdir(cache) if name.endswith(".om")]
+    assert built, f"no offline model in {cache}; the region was not compiled"
